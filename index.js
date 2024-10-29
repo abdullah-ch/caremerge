@@ -8,7 +8,6 @@ const port = process.env.PORT || 5001;
 
 function fetchTitle(address) {
     return new Promise((resolve) => {
-        // Add a default protocol if not present
         const formattedAddress = address.startsWith('http') ? address : `http://${address}`;
         const protocol = formattedAddress.startsWith('https') ? https : http;
 
