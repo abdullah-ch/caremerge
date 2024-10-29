@@ -1,38 +1,45 @@
 const express = require('express');
 const http = require('http');
 const https = require('https');
-const Q = require('q');
+const { from } = require('rxjs');
+const { mergeMap, map, toArray, catchError } = require('rxjs/operators');
 require('dotenv').config();
+
 const app = express();
 const port = process.env.PORT || 5001;
 
 function fetchTitle(address) {
-    const deferred = Q.defer(); 
-    const formattedAddress = address.startsWith('http') ? address : `http://${address}`;
-    const protocol = formattedAddress.startsWith('https') ? https : http;
+    return new Promise((resolve) => {
+        const formattedAddress = address.startsWith('http') ? address : `http://${address}`;
+        const protocol = formattedAddress.startsWith('https') ? https : http;
 
-    protocol.get(formattedAddress, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-            const titleMatch = data.match(/<title>(.*?)<\/title>/i);
-            const title = titleMatch ? titleMatch[1].trim() : 'NO RESPONSE';
-            deferred.resolve(`<li>${address} - "${title}"</li>`); // Resolve the promise
+        protocol.get(formattedAddress, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                const titleMatch = data.match(/<title>(.*?)<\/title>/i);
+                const title = titleMatch ? titleMatch[1].trim() : 'NO RESPONSE';
+                resolve(`<li>${address} - "${title}"</li>`);
+            });
+        }).on('error', () => {
+            resolve(`<li>${address} - NO RESPONSE</li>`);
         });
-    }).on('error', () => {
-        deferred.resolve(`<li>${address} - NO RESPONSE</li>`); // Resolve with an error message
     });
-
-    return deferred.promise; // Return the promise
 }
 
 app.get('/I/want/title', (req, res) => {
     const addresses = Array.isArray(req.query.address) ? req.query.address : [req.query.address];
     
-    // Map each address to a fetchTitle promise
-    Q.all(addresses.map(fetchTitle))
-        .then(results => {
-            const responseHtml = `
+    // Convert addresses to an observable stream
+    from(addresses).pipe(
+        // Fetch title for each address as an observable
+        mergeMap(address => from(fetchTitle(address)).pipe(
+            catchError(() => from([`<li>${address} - NO RESPONSE</li>`])) // Handle errors within the stream
+        )),
+        toArray(), // Collect all results into an array once completed
+        map(results => {
+            // Construct the response HTML
+            return `
                 <html>
                     <head></head>
                     <body>
@@ -40,11 +47,11 @@ app.get('/I/want/title', (req, res) => {
                         <ul>${results.join('')}</ul>
                     </body>
                 </html>`;
-            res.send(responseHtml);
         })
-        .catch(() => {
-            res.status(500).send('An error occurred while fetching titles');
-        });
+    ).subscribe({
+        next: (responseHtml) => res.send(responseHtml), // Send the HTML response
+        error: (err) => res.status(500).send('An error occurred while fetching titles'), // Send error response on failure
+    });
 });
 
 app.use((req, res) => {
